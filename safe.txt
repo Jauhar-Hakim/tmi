@@ -1,0 +1,185 @@
+USE main;
+
+WITH
+-- 1. Aggregate yearly performance
+perf_agg AS (
+  SELECT
+    employee_id,
+    avg(rating) AS avg_performance_rating,
+    -- Get the rating from the row with the maximum (latest) year
+    arg_max(rating, year) AS latest_performance_rating,
+    arg_max(year, year) AS latest_performance_year,
+    -- Create a list of {year: rating} structs
+    list(
+      {
+        'year' : year,
+        'rating' : rating
+      }
+    ORDER BY
+      year
+    ) AS performance_history
+  FROM
+    performance_yearly
+  GROUP BY
+    employee_id
+),
+
+-- 2. Aggregate yearly competencies
+-- First, get the latest score for each pillar for each employee
+latest_competencies AS (
+  SELECT
+    employee_id,
+    pillar_code,
+    -- Get the score from the row with the maximum (latest) year
+    arg_max(score, year) AS latest_score
+  FROM
+    competencies_yearly
+  GROUP BY
+    employee_id,
+    pillar_code
+),
+-- Now, pivot the latest scores into columns
+comp_agg AS (
+  SELECT
+    employee_id,
+    -- Use avg() or max() to pivot. Since there's one row per pillar, it's just grabbing the value.
+    avg(latest_score) FILTER (WHERE pillar_code = 'GDR') AS comp_gdr_latest,
+    avg(latest_score) FILTER (WHERE pillar_code = 'CEX') AS comp_cex_latest,
+    avg(latest_score) FILTER (WHERE pillar_code = 'IDS') AS comp_ids_latest,
+    avg(latest_score) FILTER (WHERE pillar_code = 'QDD') AS comp_qdd_latest,
+    avg(latest_score) FILTER (WHERE pillar_code = 'STO') AS comp_sto_latest,
+    avg(latest_score) FILTER (WHERE pillar_code = 'SEA') AS comp_sea_latest,
+    avg(latest_score) FILTER (WHERE pillar_code = 'VCU') AS comp_vcu_latest,
+    avg(latest_score) FILTER (WHERE pillar_code = 'LIE') AS comp_lie_latest,
+    avg(latest_score) FILTER (WHERE pillar_code = 'FTC') AS comp_ftc_latest,
+    avg(latest_score) FILTER (WHERE pillar_code = 'CSI') AS comp_csi_latest
+  FROM
+    latest_competencies
+  GROUP BY
+    employee_id
+),
+
+-- 3. Aggregate strengths
+strengths_agg AS (
+  SELECT
+    employee_id,
+    -- Pivot the top 5 strengths into their own columns
+    min(theme) FILTER (WHERE rank = 1) AS strength_1,
+    min(theme) FILTER (WHERE rank = 2) AS strength_2,
+    min(theme) FILTER (WHERE rank = 3) AS strength_3,
+    min(theme) FILTER (WHERE rank = 4) AS strength_4,
+    min(theme) FILTER (WHERE rank = 5) AS strength_5,
+    -- Also, create a full list of all strengths, ordered by rank
+    list(
+      {
+        'rank' : rank,
+        'theme' : theme
+      }
+    ORDER BY
+      rank
+    ) AS all_strengths
+  FROM
+    strengths
+  GROUP BY
+    employee_id
+),
+
+-- 4. Aggregate PAPI scores
+papi_agg AS (
+  SELECT
+    employee_id,
+    -- Create a list of {scale: score} structs
+    list(
+      {
+        'scale' : scale_code,
+        'score' : score
+      }
+    ORDER BY
+      scale_code
+    ) AS papi_scores
+  FROM
+    papi_scores
+  GROUP BY
+    employee_id
+),
+final_data AS(
+	-- Finally, join everything together
+	SELECT
+	  -- Employee details
+	  e.employee_id,
+	  e.fullname,
+	  e.nip,
+	  e.years_of_service_months,
+	
+	  -- Dimension Names
+	  d_co.name AS company,
+	  d_ar.name AS area,
+	  d_pos.name AS position,
+	  d_dep.name AS department,
+	  d_div.name AS division,
+	  d_dir.name AS directorate,
+	  d_gr.name AS grade,
+	  d_edu.name AS education,
+	  d_maj.name AS major,
+	
+	  -- Psych Profile (1-to-1)
+	  p.pauli,
+	  p.faxtor,
+	  p.disc,
+	  p.disc_word,
+	  p.mbti,
+	  p.iq,
+	  p.gtq,
+	  p.tiki,
+	
+	  -- Aggregated Performance
+	  pa.avg_performance_rating,
+	  pa.latest_performance_rating,
+	  pa.latest_performance_year,
+	  pa.performance_history,
+	
+	  -- Aggregated Strengths
+	  sa.strength_1,
+	  sa.strength_2,
+	  sa.strength_3,
+	  sa.strength_4,
+	  sa.strength_5,
+	  sa.all_strengths,
+	
+	  -- Aggregated PAPI Scores
+	  papia.papi_scores,
+	
+	  -- Aggregated Competencies
+	  ca.comp_gdr_latest,
+	  ca.comp_cex_latest,
+	  ca.comp_ids_latest,
+	  ca.comp_qdd_latest,
+	  ca.comp_sto_latest,
+	  ca.comp_sea_latest,
+	  ca.comp_vcu_latest,
+	  ca.comp_lie_latest,
+	  ca.comp_ftc_latest,
+	  ca.comp_csi_latest
+	
+	FROM
+	  employees e
+	  -- Join all dimension tables
+	  LEFT JOIN dim_companies d_co ON e.company_id = d_co.company_id
+	  LEFT JOIN dim_areas d_ar ON e.area_id = d_ar.area_id
+	  LEFT JOIN dim_positions d_pos ON e.position_id = d_pos.position_id
+	  LEFT JOIN dim_departments d_dep ON e.department_id = d_dep.department_id
+	  LEFT JOIN dim_divisions d_div ON e.division_id = d_div.division_id
+	  LEFT JOIN dim_directorates d_dir ON e.directorate_id = d_dir.directorate_id
+	  LEFT JOIN dim_grades d_gr ON e.grade_id = d_gr.grade_id
+	  LEFT JOIN dim_education d_edu ON e.education_id = d_edu.education_id
+	  LEFT JOIN dim_majors d_maj ON e.major_id = d_maj.major_id
+	
+	  -- Join 1-to-1 profile table
+	  LEFT JOIN profiles_psych p ON e.employee_id = p.employee_id
+	
+	  -- Join 1-to-many aggregated CTEs
+	  LEFT JOIN perf_agg pa ON e.employee_id = pa.employee_id
+	  LEFT JOIN comp_agg ca ON e.employee_id = ca.employee_id
+	  LEFT JOIN strengths_agg sa ON e.employee_id = sa.employee_id
+	  LEFT JOIN papi_agg papia ON e.employee_id = papia.employee_id)
+SELECT * FROM final_data;
